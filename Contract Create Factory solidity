@@ -1,0 +1,159 @@
+
+/*
+
+from eth_abi import encode
+from eth_utils import to_checksum_address
+
+#fullCalldata (bytes) Generator যে কোনো Bytes Data Python script দিয়ে হবে
+
+FUNCTION_SELECTOR = "Function_Selector_number" 
+
+address_list = [
+    "0x9BE97bCd01c18713e0F51F6E48a9B3C05",
+    "0x5a65accb70E547bf5Dde396925Df44a3d2",
+]
+
+def generate_calldata(addresses):
+    addresses = [to_checksum_address(a) for a in addresses]
+    encoded = encode(["address[]"], [addresses])
+    return FUNCTION_SELECTOR + encoded.hex()
+
+calldata = generate_calldata(address_list)
+
+print("\nFull Calldata Output:\n")
+print(calldata)
+
+
+*/
+
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.30;
+
+contract ContractCreateFactory {
+
+    address public owner;               // Factory owner
+    address[] private subOwners;        // Sub owners
+    address[] private createdContracts; // All deployed contracts
+
+    event SubOwnerAdded(address subOwner);
+    event SubOwnerRemoved(address subOwner);
+    event Executed(address target, bytes4 selector, bytes data);
+    event ContractCreated(address newContract, address creator);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    // --------------------------------------------------------------------
+    // MODIFIERS
+    // --------------------------------------------------------------------
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only main owner");
+        _;
+    }
+
+    modifier onlyAuthorized() {
+        require(
+            msg.sender == owner || isSubOwner(msg.sender),
+            "Not authorized"
+        );
+        _;
+    }
+
+    // --------------------------------------------------------------------
+    // INTERNAL — CHECK SUB OWNER
+    // --------------------------------------------------------------------
+
+    function isSubOwner(address user) internal view returns (bool) {
+        for (uint i = 0; i < subOwners.length; i++) {
+            if (subOwners[i] == user) return true;
+        }
+        return false;
+    }
+
+    // --------------------------------------------------------------------
+    // SUB OWNERS SYSTEM
+    // --------------------------------------------------------------------
+
+    function subOwnerAdd(address newSubOwner) external onlyOwner {
+        require(!isSubOwner(newSubOwner), "Already sub-owner");
+        subOwners.push(newSubOwner);
+        emit SubOwnerAdded(newSubOwner);
+    }
+
+    function subOwnerRemove(address subOwner) external onlyOwner {
+        require(isSubOwner(subOwner), "Not sub-owner");
+
+        uint len = subOwners.length;
+        for (uint i = 0; i < len; i++) {
+            if (subOwners[i] == subOwner) {
+                subOwners[i] = subOwners[len - 1];
+                subOwners.pop();
+                emit SubOwnerRemoved(subOwner);
+                return;
+            }
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // PUBLIC CONTRACT DEPLOY 
+    // --------------------------------------------------------------------
+
+    function createContract(bytes memory creationCode)
+        external
+        returns (address deployed)
+    {
+        assembly {
+            deployed := create(0, add(creationCode, 0x20), mload(creationCode))
+        }
+        require(deployed != address(0), "Contract creation failed");
+
+        createdContracts.push(deployed);
+        emit ContractCreated(deployed, msg.sender);
+    }
+
+    // --------------------------------------------------------------------
+    // UNIVERSAL FUNCTION CALL (MAX BYTES + FULL REVERT REASON)
+    // --------------------------------------------------------------------
+
+    function callAnyContract(
+        address functionContract,
+        bytes calldata fullCalldata
+    )
+        external
+        onlyAuthorized
+        returns (bytes memory result)
+    {
+        (bool success, bytes memory data) = functionContract.call(fullCalldata);
+
+        // FULL REVERT REASON BUBBLING (BEST PRACTICE)
+        if (!success) {
+            assembly {
+                revert(add(data, 32), mload(data))
+            }
+        }
+
+        // Extract selector if 4+ bytes
+        bytes4 selector = fullCalldata.length >= 4
+            ? bytes4(fullCalldata[0:4])
+            : bytes4(0);
+
+        emit Executed(functionContract, selector, fullCalldata);
+
+        return data;
+    }
+
+    // --------------------------------------------------------------------
+    // READ CONTRACT DATA
+    // --------------------------------------------------------------------
+
+    function getAllSubOwners() external view returns (address[] memory) {
+        return subOwners;
+    }
+
+    function getAllCreatedContracts() external view returns (address[] memory) {
+        return createdContracts;
+    }
+}
