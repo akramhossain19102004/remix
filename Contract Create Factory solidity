@@ -1,6 +1,4 @@
-
-/*
-
+/**
 from eth_abi import encode
 from eth_utils import to_checksum_address
 
@@ -23,32 +21,26 @@ calldata = generate_calldata(address_list)
 print("\nFull Calldata Output:\n")
 print(calldata)
 
-
 */
-
 
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
 contract ContractCreateFactory {
 
-    address public owner;               // Factory owner
-    address[] private subOwners;        // Sub owners
-    address[] private createdContracts; // All deployed contracts
+    address public owner;               
+    address[] private subOwners;        
+    address[] private createdContracts; 
 
     event SubOwnerAdded(address subOwner);
     event SubOwnerRemoved(address subOwner);
     event Executed(address target, bytes4 selector, bytes data);
-    event ContractCreated(address newContract, address creator);
+    event ContractCreated(address newContract, address creator, bytes32 salt);
 
     constructor() {
         owner = msg.sender;
     }
 
-    // --------------------------------------------------------------------
-    // MODIFIERS
-    // --------------------------------------------------------------------
-    
     modifier onlyOwner() {
         require(msg.sender == owner, "Only main owner");
         _;
@@ -62,20 +54,12 @@ contract ContractCreateFactory {
         _;
     }
 
-    // --------------------------------------------------------------------
-    // INTERNAL — CHECK SUB OWNER
-    // --------------------------------------------------------------------
-
     function isSubOwner(address user) internal view returns (bool) {
         for (uint i = 0; i < subOwners.length; i++) {
             if (subOwners[i] == user) return true;
         }
         return false;
     }
-
-    // --------------------------------------------------------------------
-    // SUB OWNERS SYSTEM
-    // --------------------------------------------------------------------
 
     function subOwnerAdd(address newSubOwner) external onlyOwner {
         require(!isSubOwner(newSubOwner), "Already sub-owner");
@@ -97,26 +81,39 @@ contract ContractCreateFactory {
         }
     }
 
-    // --------------------------------------------------------------------
-    // PUBLIC CONTRACT DEPLOY 
-    // --------------------------------------------------------------------
-
-    function createContract(bytes memory creationCode)
-        external
+    function createContract(bytes memory creationCode, bytes32 salt)
+        public
         returns (address deployed)
     {
         assembly {
-            deployed := create(0, add(creationCode, 0x20), mload(creationCode))
+            deployed := create2(0, add(creationCode, 32), mload(creationCode), salt)
         }
-        require(deployed != address(0), "Contract creation failed");
+
+        require(deployed != address(0), "CREATE2 deploy failed");
 
         createdContracts.push(deployed);
-        emit ContractCreated(deployed, msg.sender);
+
+        emit ContractCreated(deployed, msg.sender, salt);
     }
 
-    // --------------------------------------------------------------------
-    // UNIVERSAL FUNCTION CALL (MAX BYTES + FULL REVERT REASON)
-    // --------------------------------------------------------------------
+    function predictCreateAddress(bytes memory creationCode, bytes32 salt)
+        public
+        view
+        returns (address predicted)
+    {
+        bytes32 bytecodeHash = keccak256(creationCode);
+
+        bytes32 hash = keccak256(
+            abi.encodePacked(
+                bytes1(0xff),
+                address(this),
+                salt,
+                bytecodeHash
+            )
+        );
+
+        predicted = address(uint160(uint(hash)));
+    }
 
     function callAnyContract(
         address functionContract,
@@ -128,14 +125,12 @@ contract ContractCreateFactory {
     {
         (bool success, bytes memory data) = functionContract.call(fullCalldata);
 
-        // FULL REVERT REASON BUBBLING (BEST PRACTICE)
         if (!success) {
             assembly {
                 revert(add(data, 32), mload(data))
             }
         }
 
-        // Extract selector if 4+ bytes
         bytes4 selector = fullCalldata.length >= 4
             ? bytes4(fullCalldata[0:4])
             : bytes4(0);
@@ -144,10 +139,6 @@ contract ContractCreateFactory {
 
         return data;
     }
-
-    // --------------------------------------------------------------------
-    // READ CONTRACT DATA
-    // --------------------------------------------------------------------
 
     function getAllSubOwners() external view returns (address[] memory) {
         return subOwners;
